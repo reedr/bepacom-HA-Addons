@@ -29,6 +29,12 @@ configuration:
   foreignTTL: 
     name: Foreign TTL
     description: Time To Live packets voor BBMD.
+  discovery_low_limit:
+    name: Discovery ondergrens
+    description: Laagste device instance om te ontdekken. Devices daaronder worden genegeerd.
+  discovery_high_limit:
+    name: Discovery bovengrens
+    description: Hoogste device instance om te ontdekken. Devices daarboven worden genegeerd.
   maxSegmentsAccepted:
     name: Maximum Segmenten Geaccepted
     description: De maximale hoeveelheid segmenten er in een BACnet bericht mogen zitten.

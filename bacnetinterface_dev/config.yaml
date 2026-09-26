@@ -70,6 +70,8 @@ schema:
   api_accessible: bool?
   foreignBBMD: str?
   foreignTTL: str?
+  discovery_low_limit: int(0,4194303)?
+  discovery_high_limit: int(0,4194303)?
   vendorID: int?
   maxApduLenghtAccepted: int?
   segmentation: list(segmentedBoth|segmentedTransmit|segmentedReceive|noSegmentation||)?

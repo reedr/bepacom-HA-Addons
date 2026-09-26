@@ -368,6 +368,8 @@ async def main():
         ttl=int(foreign_ttl),
         update_event=webAPI.events.val_updated_event,
         addon_device_config=options.get("devices_setup"),
+        discovery_low_limit=options.get("discovery_low_limit"),
+        discovery_high_limit=options.get("discovery_high_limit"),
     )
 
     object_manager = ObjectManager(

@@ -243,6 +243,10 @@ Otherwise keep this option empty.
 ### Option: `foreignTTL` Foreign TTL
 Time To Live of foreign packets.
 
+### Option: `discovery_low_limit` / `discovery_high_limit` Discovery range
+Limit discovery to devices with an instance number within this range (inclusive). When both are set, the Who-Is sent at startup only asks devices in this range to respond. I-Am messages from devices outside the range are ignored.
+Leave empty to discover all devices.
+
 ### Option: `loglevel` Level of logging
 The verbosity of the logs in the add-on. 
 There are 5 levels of logging:

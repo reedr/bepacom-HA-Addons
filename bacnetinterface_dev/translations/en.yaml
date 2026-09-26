@@ -29,6 +29,12 @@ configuration:
   foreignTTL: 
     name: Foreign TTL
     description: Time To Live of the packets sent for BBMD.
+  discovery_low_limit:
+    name: Discovery Low Limit
+    description: Lowest device instance to discover. Devices below this are ignored.
+  discovery_high_limit:
+    name: Discovery High Limit
+    description: Highest device instance to discover. Devices above this are ignored.
   maxSegmentsAccepted:
     name: Maximum Segments Accepted
     description: The maximum amount of segments accepted in a message.

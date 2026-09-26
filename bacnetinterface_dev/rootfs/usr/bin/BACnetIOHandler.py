@@ -139,6 +139,8 @@ class BACnetIOHandler(
         ttl=255,
         update_event=asyncio.Event(),
         addon_device_config=[],
+        discovery_low_limit: int | None = None,
+        discovery_high_limit: int | None = None,
     ) -> None:
         if foreign_ip:
             ForeignApplication.__init__(self, device, local_ip)
@@ -151,6 +153,8 @@ class BACnetIOHandler(
         self.addon_device_config = (
             addon_device_config if addon_device_config else list()
         )
+        self.discovery_low_limit = discovery_low_limit
+        self.discovery_high_limit = discovery_high_limit
         self.sqlite_restore()
         self.startup_complete.set()
         asyncio.get_event_loop().create_task(self.discover_devices())
@@ -165,10 +169,29 @@ class BACnetIOHandler(
             await asyncio.sleep(300)
             self.deep_update(self.bacnet_device_sqlite, self.bacnet_device_dict)
 
+    def in_discovery_range(self, device_identifier: ObjectIdentifier) -> bool:
+        """Check if a device instance falls within the configured discovery range."""
+        instance = device_identifier[1]
+        if self.discovery_low_limit is not None and instance < self.discovery_low_limit:
+            return False
+        if (
+            self.discovery_high_limit is not None
+            and instance > self.discovery_high_limit
+        ):
+            return False
+        return True
+
     async def discover_devices(self):
         """Get a list of devices that respond to a whois request"""
         # Get to know the network
-        i_ams = await self.who_is(timeout=5)
+        if self.discovery_low_limit is not None and self.discovery_high_limit is not None:
+            i_ams = await self.who_is(
+                low_limit=self.discovery_low_limit,
+                high_limit=self.discovery_high_limit,
+                timeout=5,
+            )
+        else:
+            i_ams = await self.who_is(timeout=5)
 
         generated_configs = []
         retrieved_configs = []
@@ -179,6 +202,10 @@ class BACnetIOHandler(
             device_identifier: ObjectIdentifier = i_am.iAmDeviceIdentifier
 
             LOGGER.info(f"Handling I am of {device_identifier}")
+
+            if not self.in_discovery_range(device_identifier):
+                LOGGER.debug(f"Ignoring {device_identifier}, outside discovery range")
+                return
 
             if self.init_discovery_complete.is_set():
                 if self.is_in_dict(device_identifier, device_identifier):
@@ -213,7 +240,7 @@ class BACnetIOHandler(
             if self.identifier_to_string(config.device_identifier) == device_id_str:
                 return config
 
-        return DeviceConfiguration()
+        return DeviceConfiguration({})
 
     def generate_config(
         self, device_identifier: ObjectIdentifier
@@ -825,6 +852,9 @@ class BACnetIOHandler(
         await super().do_IAmRequest(apdu)
 
         if not self.init_discovery_complete.is_set():
+            return
+
+        if not self.in_discovery_range(apdu.iAmDeviceIdentifier):
             return
 
         config = self.retrieve_config(apdu.iAmDeviceIdentifier)
