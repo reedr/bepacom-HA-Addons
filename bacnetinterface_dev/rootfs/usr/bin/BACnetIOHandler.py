@@ -1311,21 +1311,23 @@ class BACnetIOHandler(
             subscriptions, ErrorRejectAbortNack
         ):
             by_recipient: dict[str, int] = {}
-            min_time_remaining_others = None
+            min_time_remaining: dict[str, int] = {}
             for subscription in subscriptions:
                 recipient = self.recipient_to_string(subscription.recipient.recipient)
                 by_recipient[recipient] = by_recipient.get(recipient, 0) + 1
-                if recipient != self.own_ip:
-                    time_remaining = int(subscription.timeRemaining)
-                    if min_time_remaining_others is None or time_remaining < min_time_remaining_others:
-                        min_time_remaining_others = time_remaining
+                time_remaining = int(subscription.timeRemaining)
+                if time_remaining < min_time_remaining.get(recipient, time_remaining + 1):
+                    min_time_remaining[recipient] = time_remaining
+            recipients = sorted(by_recipient, key=lambda recipient: -by_recipient[recipient])
             diagnostics["cov_subscriptions"] = {
                 "total": sum(by_recipient.values()),
                 "own": by_recipient.get(self.own_ip, 0),
-                "by_recipient": dict(
-                    sorted(by_recipient.items(), key=lambda item: -item[1])
-                ),
-                "min_time_remaining_others": min_time_remaining_others,
+                "by_recipient": {
+                    recipient: by_recipient[recipient] for recipient in recipients
+                },
+                "min_time_remaining_by_recipient": {
+                    recipient: min_time_remaining[recipient] for recipient in recipients
+                },
             }
 
         if diagnostics:
