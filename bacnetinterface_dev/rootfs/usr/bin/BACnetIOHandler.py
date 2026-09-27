@@ -75,6 +75,7 @@ from utils import (
 
 KeyType = TypeVar("KeyType")
 _create_task_delay = 0.001
+_unsubscribe_timeout = 10
 
 bacpypes3.json.util.objectidentifier_encode = objectidentifier_alt_encode
 bacpypes3.json.util.bitstring_encode = bitstring_alt_encode
@@ -1084,6 +1085,9 @@ class BACnetIOHandler(
                             subscription.address = self.dev_to_addr(
                                 dev=device_identifier
                             )
+                            unsubscribe_cov_request.pduDestination = (
+                                subscription.address
+                            )
 
                             new_key = (
                                 subscription.address,
@@ -1141,14 +1145,17 @@ class BACnetIOHandler(
         except AbortPDU as err:
             LOGGER.error(f"{err}")
 
+            for task in self.subscription_tasks:
+                if task_name in task.get_name():
+                    index = self.subscription_tasks.index(task)
+                    self.subscription_tasks.pop(index)
+
         except asyncio.CancelledError as err:
             LOGGER.error(
                 f"Cancelling subscription task: {device_identifier}, {object_identifier}: {err}"
             )
 
-            # send the request, wait for the response
-            if unsubscribe_cov_request:
-                response = await self.request(unsubscribe_cov_request)
+            await self.send_unsubscribe(unsubscribe_cov_request, task_name)
 
             for task in self.subscription_tasks:
                 if task_name in task.get_name():
@@ -1158,20 +1165,43 @@ class BACnetIOHandler(
         except Exception as err:
             LOGGER.error(f"Error: {device_identifier}, {object_identifier}: {err}")
 
-            # send the request, wait for the response
-            if unsubscribe_cov_request:
-                response = await self.request(unsubscribe_cov_request)
+            await self.send_unsubscribe(unsubscribe_cov_request, task_name)
 
             for task in self.subscription_tasks:
                 if task_name in task.get_name():
                     index = self.subscription_tasks.index(task)
                     self.subscription_tasks.pop(index)
 
+    async def send_unsubscribe(
+        self, unsubscribe_cov_request: SubscribeCOVRequest | None, task_name: str
+    ) -> None:
+        """Cancel a CoV subscription on the device, without waiting forever."""
+        if not unsubscribe_cov_request:
+            return
+        try:
+            response = await asyncio.wait_for(
+                self.request(unsubscribe_cov_request), _unsubscribe_timeout
+            )
+            if isinstance(response, ErrorRejectAbortNack):
+                LOGGER.warning(f"Unsubscribe {task_name} rejected: {response}")
+        except Exception as err:
+            LOGGER.warning(f"Unsubscribe {task_name} failed: {err!r}")
+
     async def end_subscription_tasks(self):
-        for task in self.subscription_tasks:
+        """Cancel all subscription tasks, each unsubscribes from its device."""
+        tasks = [task for task in self.subscription_tasks if not task.done()]
+        LOGGER.info(f"Cancelling {len(tasks)} CoV subscriptions")
+        for task in tasks:
             task.cancel()
-        while self.subscription_tasks:
-            await asyncio.sleep(2)
+        if tasks:
+            done, pending = await asyncio.wait(
+                tasks, timeout=_unsubscribe_timeout + 2
+            )
+            if pending:
+                LOGGER.warning(
+                    f"{len(pending)} CoV subscriptions did not cancel in time"
+                )
+        self.subscription_tasks.clear()
         LOGGER.info("Cancelled all subscriptions")
 
     async def do_ConfirmedCOVNotificationRequest(

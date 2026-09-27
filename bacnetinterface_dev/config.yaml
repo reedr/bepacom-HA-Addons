@@ -11,6 +11,7 @@ arch:
   - amd64
   - i386
 init: false
+timeout: 30
 ingress: true
 ingress_entry: webapp
 host_network: true

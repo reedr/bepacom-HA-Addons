@@ -1,6 +1,9 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
+# Give the interface time to cancel CoV subscriptions when stopping
+ENV S6_SERVICES_GRACETIME=20000
+
 # Install requirements for add-on
 WORKDIR /usr/src
 RUN \
