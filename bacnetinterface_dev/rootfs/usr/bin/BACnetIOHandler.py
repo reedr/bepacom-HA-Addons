@@ -1,6 +1,7 @@
 """BACnet handler classes for BACnet add-on."""
 
 import asyncio
+from datetime import datetime, timezone
 import json
 from ast import List
 from collections.abc import Mapping
@@ -133,6 +134,7 @@ class BACnetIOHandler(
     read_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)
     device_configurations: list[DeviceConfiguration] = []
     cov_results: dict[str, str] = {}
+    device_diagnostics: dict[str, dict] = {}
 
     def __init__(
         self,
@@ -162,6 +164,8 @@ class BACnetIOHandler(
         self.startup_complete.set()
         asyncio.get_event_loop().create_task(self.discover_devices())
         asyncio.get_event_loop().create_task(self.sqlite_updater())
+        self.own_ip = str(local_ip).split("/")[0]
+        asyncio.get_event_loop().create_task(self.device_diagnostics_updater())
         LOGGER.debug("Application initialised")
 
     def sqlite_restore(self):
@@ -1252,6 +1256,116 @@ class BACnetIOHandler(
         LOGGER.info(
             f"CoV subscriptions total: {all_ok} ok, {all_failed} failed, {pending} pending"
         )
+
+    @staticmethod
+    def recipient_to_string(recipient) -> str:
+        """Describe a COV subscription recipient as an IP address or device."""
+        if recipient.device is not None:
+            return f"device:{recipient.device[1]}"
+        address = recipient.address
+        if address is None:
+            return "unknown"
+        mac = bytes(address.macAddress)
+        if len(mac) == 6 and not address.networkNumber:
+            ip = ".".join(str(octet) for octet in mac[:4])
+            port = int.from_bytes(mac[4:], "big")
+            return ip if port == 47808 else f"{ip}:{port}"
+        return f"{address.networkNumber}:{mac.hex()}"
+
+    async def read_device_diagnostics(self, device_identifier: ObjectIdentifier) -> None:
+        """Read status, database revision and active COV subscriptions of a device."""
+        device_identifier = ObjectIdentifier(device_identifier)
+        device_id_str = self.identifier_to_string(device_identifier)
+        address = self.dev_to_addr(device_identifier)
+        if not address:
+            return
+
+        diagnostics = {}
+
+        async with self.read_semaphore:
+            for property_identifier in ("systemStatus", "databaseRevision"):
+                try:
+                    value = await self.read_property(
+                        address, device_identifier, property_identifier
+                    )
+                except Exception as err:
+                    LOGGER.debug(f"Reading {device_id_str} {property_identifier} failed: {err!r}")
+                    continue
+                if value is None or isinstance(value, ErrorRejectAbortNack):
+                    continue
+                diagnostics[property_identifier] = (
+                    int(value)
+                    if property_identifier == "databaseRevision"
+                    else getattr(value, "attr", str(value))
+                )
+
+            try:
+                subscriptions = await self.read_property(
+                    address, device_identifier, "activeCovSubscriptions"
+                )
+            except Exception as err:
+                LOGGER.debug(f"Reading {device_id_str} activeCovSubscriptions failed: {err!r}")
+                subscriptions = None
+
+        if subscriptions is not None and not isinstance(
+            subscriptions, ErrorRejectAbortNack
+        ):
+            by_recipient: dict[str, int] = {}
+            min_time_remaining_others = None
+            for subscription in subscriptions:
+                recipient = self.recipient_to_string(subscription.recipient.recipient)
+                by_recipient[recipient] = by_recipient.get(recipient, 0) + 1
+                if recipient != self.own_ip:
+                    time_remaining = int(subscription.timeRemaining)
+                    if min_time_remaining_others is None or time_remaining < min_time_remaining_others:
+                        min_time_remaining_others = time_remaining
+            diagnostics["cov_subscriptions"] = {
+                "total": sum(by_recipient.values()),
+                "own": by_recipient.get(self.own_ip, 0),
+                "by_recipient": dict(
+                    sorted(by_recipient.items(), key=lambda item: -item[1])
+                ),
+                "min_time_remaining_others": min_time_remaining_others,
+            }
+
+        if diagnostics:
+            diagnostics["updated"] = datetime.now(timezone.utc).isoformat()
+            self.device_diagnostics[device_id_str] = {
+                **self.device_diagnostics.get(device_id_str, {}),
+                **diagnostics,
+            }
+
+    async def device_diagnostics_updater(self, interval: float = 300) -> None:
+        """Periodically read device diagnostics once discovery has completed."""
+        await self.init_discovery_complete.wait()
+        await asyncio.sleep(30)
+        while True:
+            device_identifiers = [
+                config.device_identifier for config in self.device_configurations
+            ]
+            await asyncio.gather(
+                *(
+                    self.read_device_diagnostics(device_identifier)
+                    for device_identifier in device_identifiers
+                ),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(interval)
+
+    def get_device_info(self) -> dict[str, dict]:
+        """Addresses, versions and diagnostics of all known devices."""
+        info = {}
+        for device_id, addresses in self.get_device_addresses().items():
+            device_object = self.bacnet_device_dict.get(device_id, {}).get(device_id, {})
+            info[device_id] = {
+                **addresses,
+                "firmwareRevision": device_object.get("firmwareRevision"),
+                "applicationSoftwareVersion": device_object.get(
+                    "applicationSoftwareVersion"
+                ),
+                **self.device_diagnostics.get(device_id, {}),
+            }
+        return info
 
     async def send_unsubscribe(
         self, unsubscribe_cov_request: SubscribeCOVRequest | None, task_name: str

@@ -718,6 +718,12 @@ async def get_device_addresses():
     return JSONResponse(content=bacnet_application.get_device_addresses())
 
 
+@app.get("/apiv2/device_info", tags=["apiv2"], status_code=200)
+async def get_device_info():
+    """Addresses, versions, status and COV subscription counts of all known devices"""
+    return JSONResponse(content=jsonable_encoder(bacnet_application.get_device_info()))
+
+
 @app.get("/apiv2/cov/{deviceid}/{objectid}", tags=["apiv2"], status_code=200)
 async def get_subscription_device_object(
     deviceid: str = Path(description="device:instance"),
