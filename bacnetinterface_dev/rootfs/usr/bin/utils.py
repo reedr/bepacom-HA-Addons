@@ -70,14 +70,24 @@ class DeviceConfiguration:
         return valid_items
 
     def all_to_objects(self, object_list: list[ObjectIdentifier]):
+        """Expand "all" to the device's objects, leaving out any object that is
+        explicitly listed in another list. Explicit listings override "all"."""
+        explicit = {
+            ObjectIdentifier(item)
+            for items in (self.cov_items, self.poll_items_quick, self.poll_items_slow)
+            if items != ["all"]
+            for item in items
+        }
+        remaining = [obj for obj in object_list if ObjectIdentifier(obj) not in explicit]
+
         if self.cov_items == ["all"]:
-            self.cov_items = object_list
+            self.cov_items = remaining
 
         if self.poll_items_quick == ["all"]:
-            self.poll_items_quick = object_list
+            self.poll_items_quick = remaining
 
         if self.poll_items_slow == ["all"]:
-            self.poll_items_slow = object_list
+            self.poll_items_slow = remaining
 
     def remove_duplicate_slow_polls(self):
         """Remove non-unique identifiers from poll_items_slow if they exist in poll_items_quick."""

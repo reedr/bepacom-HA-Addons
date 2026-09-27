@@ -199,6 +199,9 @@ multiStateValue
 - `resub_on_iam` Resubscribe to an object with CoV when an I-Am request has been received. When the lifetime of the object has passed, enabling this key will result in the resubscription of a CoV subscription. Otherwise it'll just update any new information of the device.
 - `reread_on_iam` Reread the object list when an I-Am request has been received. This key will result in all objects of this device to be read again.
 
+An object that is explicitly listed in one of `CoV_list`, `quick_poll_list` or `slow_poll_list` is left out of any other list set to "all". For example, with `CoV_list: [all]` and `quick_poll_list: [analogValue:5]`, analogValue:5 is quick polled and all other objects get a CoV subscription.
+If an object is explicitly listed in more than one list, or several lists are set to "all", CoV takes precedence over quick polling, and quick polling over slow polling. The exception is `CoV_list` and `slow_poll_list` both set to "all": objects then get a CoV subscription and are also slow polled.
+
 The following properties will be read each poll:
 - presentValue
 - statusFlags
