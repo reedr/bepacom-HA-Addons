@@ -712,6 +712,12 @@ def get_subscription_data_from_task(
     }
 
 
+@app.get("/apiv2/addresses", tags=["apiv2"], status_code=200)
+async def get_device_addresses():
+    """BACnet and IP addresses of all known devices"""
+    return JSONResponse(content=bacnet_application.get_device_addresses())
+
+
 @app.get("/apiv2/cov/{deviceid}/{objectid}", tags=["apiv2"], status_code=200)
 async def get_subscription_device_object(
     deviceid: str = Path(description="device:instance"),

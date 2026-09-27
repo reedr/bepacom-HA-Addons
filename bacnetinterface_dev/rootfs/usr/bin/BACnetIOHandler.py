@@ -831,6 +831,36 @@ class BACnetIOHandler(
 
         return None
 
+    def router_for_network(self, network: int) -> Address | None:
+        """Return the address of the router to a remote network, if known."""
+        router_info_cache = getattr(self.nsap, "router_info_cache", None)
+        if not router_info_cache:
+            return None
+        for (_snet, dnet), (router_address, _status) in router_info_cache.path_info.items():
+            if dnet == network:
+                return router_address
+        return None
+
+    def get_device_addresses(self) -> dict[str, dict[str, str | None]]:
+        """Map each known device to its BACnet address and IP address.
+
+        For routed devices the IP address is that of the router.
+        """
+        addresses = {}
+        for address, device_info in self.device_info_cache.address_cache.items():
+            device_id = f"device:{device_info.device_instance}"
+            ip_address = None
+            if address.is_localstation:
+                ip_address = str(address)
+            elif address.is_remotestation:
+                router = address.addrRoute or self.router_for_network(address.addrNet)
+                ip_address = str(router) if router else None
+            addresses[device_id] = {
+                "address": str(address),
+                "ip_address": ip_address,
+            }
+        return addresses
+
     def addr_to_dev(self, addr: Address) -> ObjectIdentifier | None:
         for address in self.device_info_cache.address_cache:
             if addr == address:
