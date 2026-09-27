@@ -1175,7 +1175,7 @@ class BACnetIOHandler(
                     self.subscription_tasks.pop(index)
 
         except asyncio.CancelledError as err:
-            LOGGER.error(
+            LOGGER.debug(
                 f"Cancelling subscription task: {device_identifier}, {object_identifier}: {err}"
             )
 
