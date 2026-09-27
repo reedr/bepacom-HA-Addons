@@ -131,6 +131,7 @@ class BACnetIOHandler(
     init_discovery_complete: asyncio.Event = asyncio.Event()
     read_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)
     device_configurations: list[DeviceConfiguration] = []
+    cov_results: dict[str, str] = {}
 
     def __init__(
         self,
@@ -230,6 +231,8 @@ class BACnetIOHandler(
                 await self.config_to_tasks(config)
             else:
                 await self.config_to_tasks(config, False)
+
+        asyncio.get_event_loop().create_task(self.log_subscription_summary())
 
     def retrieve_config(
         self, device_identifier: ObjectIdentifier
@@ -1055,7 +1058,9 @@ class BACnetIOHandler(
             async with self.change_of_value(
                 address=device_address,
                 monitored_object_identifier=object_identifier,
-                subscriber_process_identifier=None,
+                subscriber_process_identifier=self.stable_process_identifier(
+                    object_identifier
+                ),
                 issue_confirmed_notifications=confirmed_notification,
                 lifetime=lifetime,
             ) as subscription:
@@ -1071,6 +1076,8 @@ class BACnetIOHandler(
                 object_class = self.vendor_info.get_object_class(
                     subscription.monitored_object_identifier[0]
                 )
+
+                self.cov_results[task_name] = "ok"
 
                 LOGGER.debug(f"Created {task_name} subscription task successfully")
 
@@ -1145,6 +1152,12 @@ class BACnetIOHandler(
                 f"ErrorRejectAbortNack: {self.addr_to_dev(device_address)}, {object_identifier}: {err}"
             )
 
+            self.cov_results[task_name] = str(
+                getattr(err, "errorCode", None)
+                or getattr(err, "apduAbortRejectReason", None)
+                or type(err).__name__
+            )
+
             for task in self.subscription_tasks:
                 if task_name in task.get_name():
                     index = self.subscription_tasks.index(task)
@@ -1152,6 +1165,8 @@ class BACnetIOHandler(
 
         except AbortPDU as err:
             LOGGER.error(f"{err}")
+
+            self.cov_results[task_name] = "abort"
 
             for task in self.subscription_tasks:
                 if task_name in task.get_name():
@@ -1163,6 +1178,8 @@ class BACnetIOHandler(
                 f"Cancelling subscription task: {device_identifier}, {object_identifier}: {err}"
             )
 
+            self.cov_results.pop(task_name, None)
+
             await self.send_unsubscribe(unsubscribe_cov_request, task_name)
 
             for task in self.subscription_tasks:
@@ -1173,12 +1190,67 @@ class BACnetIOHandler(
         except Exception as err:
             LOGGER.error(f"Error: {device_identifier}, {object_identifier}: {err}")
 
+            if self.cov_results.get(task_name) != "ok":
+                self.cov_results[task_name] = type(err).__name__
+
             await self.send_unsubscribe(unsubscribe_cov_request, task_name)
 
             for task in self.subscription_tasks:
                 if task_name in task.get_name():
                     index = self.subscription_tasks.index(task)
                     self.subscription_tasks.pop(index)
+
+    @staticmethod
+    def stable_process_identifier(object_identifier: ObjectIdentifier) -> int:
+        """Subscriber process identifier that stays the same across restarts.
+
+        Uses the 32-bit encoding of the object identifier (type << 22 | instance),
+        which is unique per object on a device. Resubscribing after a restart
+        then refreshes the existing subscription on the device instead of
+        leaving the old one behind until its lifetime expires.
+        """
+        object_identifier = ObjectIdentifier(object_identifier)
+        return (int(object_identifier[0]) << 22) | object_identifier[1]
+
+    async def log_subscription_summary(self, timeout: float = 300) -> None:
+        """Log per-device CoV subscription totals once initial subscribes settle."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if all(
+                task.done() or task.get_name() in self.cov_results
+                for task in self.subscription_tasks
+            ):
+                break
+            await asyncio.sleep(2)
+
+        totals: dict[str, dict[str, int]] = {}
+        for task_name, result in self.cov_results.items():
+            device = task_name.split(",")[0]
+            totals.setdefault(device, {})
+            totals[device][result] = totals[device].get(result, 0) + 1
+
+        pending = sum(
+            1
+            for task in self.subscription_tasks
+            if not task.done() and task.get_name() not in self.cov_results
+        )
+
+        all_ok = all_failed = 0
+        for device in sorted(totals, key=lambda d: int(d.split(":")[-1])):
+            ok = totals[device].pop("ok", 0)
+            failed = sum(totals[device].values())
+            all_ok += ok
+            all_failed += failed
+            reasons = ", ".join(
+                f"{count} {reason}" for reason, count in totals[device].items()
+            )
+            LOGGER.info(
+                f"{device}: CoV {ok} ok, {failed} failed" + (f" ({reasons})" if reasons else "")
+            )
+        LOGGER.info(
+            f"CoV subscriptions total: {all_ok} ok, {all_failed} failed, {pending} pending"
+        )
 
     async def send_unsubscribe(
         self, unsubscribe_cov_request: SubscribeCOVRequest | None, task_name: str
