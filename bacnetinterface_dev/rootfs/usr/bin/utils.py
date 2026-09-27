@@ -69,6 +69,30 @@ class DeviceConfiguration:
                     )
         return valid_items
 
+    def drop_missing_objects(self, object_list: list[ObjectIdentifier]) -> list[str]:
+        """Remove explicitly listed objects that the device doesn't have.
+
+        Returns the removed objects."""
+        present = {ObjectIdentifier(obj) for obj in object_list}
+        dropped = set()
+
+        def keep_present(items):
+            if items == ["all"]:
+                return items
+            kept = []
+            for item in items:
+                if ObjectIdentifier(item) in present:
+                    kept.append(item)
+                else:
+                    dropped.add(f"{item[0].attr}:{item[1]}")
+            return kept
+
+        self.cov_items = keep_present(self.cov_items)
+        self.poll_items_quick = keep_present(self.poll_items_quick)
+        self.poll_items_slow = keep_present(self.poll_items_slow)
+
+        return sorted(dropped)
+
     def all_to_objects(self, object_list: list[ObjectIdentifier]):
         """Expand "all" to the device's objects, leaving out any object that is
         explicitly listed in another list. Explicit listings override "all"."""

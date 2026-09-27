@@ -268,6 +268,12 @@ class BACnetIOHandler(
             except Exception as error:
                 LOGGER.error(f"We got here... {error}")
 
+        if object_list:
+            if dropped := configuration.drop_missing_objects(object_list):
+                LOGGER.info(
+                    f"Ignoring objects not present on {device_id_str}: {', '.join(dropped)}"
+                )
+
         configuration.all_to_objects(object_list)
         # remove object from slow poll if fast polled
         configuration.remove_duplicate_slow_polls()
@@ -731,9 +737,6 @@ class BACnetIOHandler(
             ),
             None,
         )
-        if specific_config:
-            return specific_config
-
         generic_config = next(
             (
                 config
@@ -742,6 +745,11 @@ class BACnetIOHandler(
             ),
             None,
         )
+
+        if specific_config:
+            # options missing from the device specific config fall back to "all"
+            return {**(generic_config or {}), **specific_config}
+
         if generic_config:
             return {
                 **generic_config,

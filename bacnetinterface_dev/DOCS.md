@@ -178,7 +178,7 @@ devices_setup:
       - all
 ```
 
-- `deviceID` This key contains the device identifier (in "device:xxxx" format where xxxx is the number) for the device you want the following options to count for. A special "all" key will make the settings below a general configuration.
+- `deviceID` This key contains the device identifier (in "device:xxxx" format where xxxx is the number) for the device you want the following options to count for. A special "all" key will make the settings below a general configuration. A device specific configuration only needs the options that differ from the "all" configuration; any option it leaves out is taken from the "all" configuration.
 - `CoV_lifetime` This key contains the lifetime for each CoV subscription made. This value is in seconds and can be between 60 and 28800. The add-on will automatically resubscribe once the lifetime has passed.
 - `CoV_list` This key contains a list containing each object identifier (in "object:xxxx" format where xxxx is the number and object written in the format as seen below) the add-on has to subscribe to. A special "all" key will make the add-on subscribe to all supported objects of the device. The list can be empty if no CoV subscriptions are desired.
 ```yaml
@@ -201,6 +201,8 @@ multiStateValue
 
 An object that is explicitly listed in one of `CoV_list`, `quick_poll_list` or `slow_poll_list` is left out of any other list set to "all". For example, with `CoV_list: [all]` and `quick_poll_list: [analogValue:5]`, analogValue:5 is quick polled and all other objects get a CoV subscription.
 If an object is explicitly listed in more than one list, or several lists are set to "all", CoV takes precedence over quick polling, and quick polling over slow polling. The exception is `CoV_list` and `slow_poll_list` both set to "all": objects then get a CoV subscription and are also slow polled.
+
+Explicitly listed objects that don't exist on a device are ignored for that device, so the "all" configuration can list objects that only some devices have.
 
 The following properties will be read each poll:
 - presentValue
