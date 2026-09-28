@@ -135,6 +135,7 @@ class BACnetIOHandler(
     device_configurations: list[DeviceConfiguration] = []
     cov_results: dict[str, str] = {}
     device_diagnostics: dict[str, dict] = {}
+    last_cov_received: dict[str, str] = {}
 
     def __init__(
         self,
@@ -1128,6 +1129,10 @@ class BACnetIOHandler(
                     except Exception:
                         raise
 
+                    self.last_cov_received[
+                        self.identifier_to_string(device_identifier)
+                    ] = datetime.now(timezone.utc).isoformat()
+
                     lifetime_remaining_context.set(
                         subscription.refresh_subscription_handle.when()
                     )
@@ -1272,6 +1277,22 @@ class BACnetIOHandler(
             return ip if port == 47808 else f"{ip}:{port}"
         return f"{address.networkNumber}:{mac.hex()}"
 
+    def expected_cov_subscriptions(self, device_id_str: str) -> dict[int, ObjectIdentifier]:
+        """Subscriptions this interface holds on a device, by process identifier."""
+        expected = {}
+        for task in self.subscription_tasks:
+            task_name = task.get_name()
+            parts = task_name.split(",")
+            if (
+                parts[0] != device_id_str
+                or task.done()
+                or self.cov_results.get(task_name) != "ok"
+            ):
+                continue
+            object_identifier = ObjectIdentifier(parts[1])
+            expected[self.stable_process_identifier(object_identifier)] = object_identifier
+        return expected
+
     async def read_device_diagnostics(self, device_identifier: ObjectIdentifier) -> None:
         """Read status, database revision and active COV subscriptions of a device."""
         device_identifier = ObjectIdentifier(device_identifier)
@@ -1312,8 +1333,16 @@ class BACnetIOHandler(
         ):
             by_recipient: dict[str, int] = {}
             min_time_remaining: dict[str, int] = {}
+            own_entries: list[tuple[int, ObjectIdentifier]] = []
             for subscription in subscriptions:
                 recipient = self.recipient_to_string(subscription.recipient.recipient)
+                if recipient == self.own_ip:
+                    own_entries.append(
+                        (
+                            int(subscription.recipient.processIdentifier),
+                            subscription.monitoredPropertyReference.objectIdentifier,
+                        )
+                    )
                 by_recipient[recipient] = by_recipient.get(recipient, 0) + 1
                 time_remaining = int(subscription.timeRemaining)
                 if time_remaining < min_time_remaining.get(recipient, time_remaining + 1):
@@ -1330,12 +1359,51 @@ class BACnetIOHandler(
                 },
             }
 
-        if diagnostics:
-            diagnostics["updated"] = datetime.now(timezone.utc).isoformat()
-            self.device_diagnostics[device_id_str] = {
-                **self.device_diagnostics.get(device_id_str, {}),
-                **diagnostics,
+            expected = self.expected_cov_subscriptions(device_id_str)
+            confirmed = {
+                process_identifier
+                for process_identifier, object_identifier in own_entries
+                if expected.get(process_identifier) == object_identifier
             }
+            missing = [
+                self.identifier_to_string(object_identifier)
+                for process_identifier, object_identifier in expected.items()
+                if process_identifier not in confirmed
+            ]
+            rejected = sorted(
+                task_name.split(",")[1]
+                for task_name, result in self.cov_results.items()
+                if task_name.split(",")[0] == device_id_str and result != "ok"
+            )
+            diagnostics["cov_subscriptions"].update(
+                {
+                    "rejected": len(rejected),
+                    "rejected_objects": rejected[:25],
+                    "expected": len(expected),
+                    "confirmed": len(confirmed),
+                    "missing": len(missing),
+                    "missing_objects": sorted(missing)[:25],
+                    "unexpected_own": len(own_entries) - len(confirmed),
+                }
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+        diagnostics["reachable"] = bool(diagnostics)
+        if diagnostics["reachable"]:
+            diagnostics["updated"] = now
+        diagnostics["checked"] = now
+
+        merged = {**self.device_diagnostics.get(device_id_str, {}), **diagnostics}
+        cov = merged.get("cov_subscriptions") or {}
+        if not merged["reachable"]:
+            merged["health"] = "unreachable"
+        elif merged.get("systemStatus") not in (None, "operational"):
+            merged["health"] = "not_operational"
+        elif cov.get("missing") or cov.get("rejected"):
+            merged["health"] = "missing_subscriptions"
+        else:
+            merged["health"] = "ok"
+        self.device_diagnostics[device_id_str] = merged
 
     async def device_diagnostics_updater(self, interval: float = 300) -> None:
         """Periodically read device diagnostics once discovery has completed."""
@@ -1366,6 +1434,7 @@ class BACnetIOHandler(
                     "applicationSoftwareVersion"
                 ),
                 **self.device_diagnostics.get(device_id, {}),
+                "last_cov_received": self.last_cov_received.get(device_id),
             }
         return info
 
