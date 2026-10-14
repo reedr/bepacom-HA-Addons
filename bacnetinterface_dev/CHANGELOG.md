@@ -1,4 +1,10 @@
-﻿﻿<!-- https://developers.home-assistant.io/docs/add-ons/presentation#keeping-a-changelog -->
+﻿<!-- https://developers.home-assistant.io/docs/add-ons/presentation#keeping-a-changelog -->
+
+# 1.6.0b6
+14/10/2026
+
+## Fixed
+- Failed CoV subscriptions are retried. A subscription that failed (no response, abort, a rejection, or a renewal that went unanswered) used to stay gone until the add-on restarted, even after the device was reachable again. It is now resubscribed after 60 s, doubling per attempt up to 15 min, with some jitter so many failures don't retry at once. Errors that retrying can't fix (unknown object or property, not a CoV property, unsupported) are not retried.
 
 # 1.6.0b5
 04/04/2025

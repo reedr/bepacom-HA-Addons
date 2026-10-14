@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import random
 from ast import List
 from collections.abc import Mapping
 from contextvars import Context, ContextVar
@@ -78,6 +79,19 @@ from utils import (
 KeyType = TypeVar("KeyType")
 _create_task_delay = 0.001
 _unsubscribe_timeout = 10
+# A failed CoV subscription is retried after this many seconds, doubling per
+# attempt up to the maximum, so a device that was unreachable for a while gets
+# its subscriptions back without an add-on restart.
+_cov_retry_initial = 60
+_cov_retry_max = 900
+# Errors that retrying will not fix.
+_cov_permanent_errors = {
+    "unknown-object",
+    "unknown-property",
+    "not-cov-property",
+    "optional-functionality-not-supported",
+    "unsupported-object-type",
+}
 
 bacpypes3.json.util.objectidentifier_encode = objectidentifier_alt_encode
 bacpypes3.json.util.bitstring_encode = bitstring_alt_encode
@@ -134,6 +148,9 @@ class BACnetIOHandler(
     read_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)
     device_configurations: list[DeviceConfiguration] = []
     cov_results: dict[str, str] = {}
+    cov_retry_attempts: dict[str, int] = {}
+    cov_retry_handles: dict[str, asyncio.TimerHandle] = {}
+    shutting_down: bool = False
     device_diagnostics: dict[str, dict] = {}
     last_cov_received: dict[str, str] = {}
 
@@ -1084,6 +1101,8 @@ class BACnetIOHandler(
                 )
 
                 self.cov_results[task_name] = "ok"
+                if self.cov_retry_attempts.pop(task_name, None):
+                    LOGGER.info(f"CoV subscription {task_name} restored")
 
                 LOGGER.debug(f"Created {task_name} subscription task successfully")
 
@@ -1173,6 +1192,15 @@ class BACnetIOHandler(
                     index = self.subscription_tasks.index(task)
                     self.subscription_tasks.pop(index)
 
+            self.schedule_cov_retry(
+                task_name,
+                device_identifier,
+                object_identifier,
+                confirmed_notification,
+                lifetime,
+                self.cov_results[task_name],
+            )
+
         except AbortPDU as err:
             LOGGER.error(f"{err}")
 
@@ -1182,6 +1210,15 @@ class BACnetIOHandler(
                 if task_name in task.get_name():
                     index = self.subscription_tasks.index(task)
                     self.subscription_tasks.pop(index)
+
+            self.schedule_cov_retry(
+                task_name,
+                device_identifier,
+                object_identifier,
+                confirmed_notification,
+                lifetime,
+                "abort",
+            )
 
         except asyncio.CancelledError as err:
             LOGGER.debug(
@@ -1209,6 +1246,90 @@ class BACnetIOHandler(
                 if task_name in task.get_name():
                     index = self.subscription_tasks.index(task)
                     self.subscription_tasks.pop(index)
+
+            # e.g. a renewal that got no response: subscribe again from scratch
+            self.schedule_cov_retry(
+                task_name,
+                device_identifier,
+                object_identifier,
+                confirmed_notification,
+                lifetime,
+                type(err).__name__,
+            )
+
+    def schedule_cov_retry(
+        self,
+        task_name: str,
+        device_identifier: ObjectIdentifier | None,
+        object_identifier: ObjectIdentifier,
+        confirmed_notification: bool,
+        lifetime: int | None,
+        reason: str,
+    ) -> None:
+        """Subscribe again later after a failure, with exponential backoff.
+
+        Without this a subscription that failed once (e.g. the device gave no
+        response during a network change) stayed gone until the add-on
+        restarted, while the device itself was fine again.
+        """
+        if self.shutting_down or device_identifier is None:
+            return
+        if reason in _cov_permanent_errors:
+            LOGGER.info(f"Not retrying CoV subscription {task_name}: {reason}")
+            return
+        if task_name in self.cov_retry_handles:
+            return
+        attempt = self.cov_retry_attempts.get(task_name, 0) + 1
+        self.cov_retry_attempts[task_name] = attempt
+        delay = min(_cov_retry_initial * 2 ** (attempt - 1), _cov_retry_max)
+        # spread out the retries of many subscriptions that failed together
+        delay *= random.uniform(1.0, 1.25)
+        LOGGER.info(
+            f"Retrying CoV subscription {task_name} in {delay:.0f} s "
+            f"(attempt {attempt}, {reason})"
+        )
+        loop = asyncio.get_event_loop()
+        self.cov_retry_handles[task_name] = loop.call_later(
+            delay,
+            lambda: loop.create_task(
+                self.retry_cov_subscription(
+                    task_name,
+                    device_identifier,
+                    object_identifier,
+                    confirmed_notification,
+                    lifetime,
+                )
+            ),
+        )
+
+    async def retry_cov_subscription(
+        self,
+        task_name: str,
+        device_identifier: ObjectIdentifier,
+        object_identifier: ObjectIdentifier,
+        confirmed_notification: bool,
+        lifetime: int | None,
+    ) -> None:
+        """Recreate a failed subscription task (see schedule_cov_retry)."""
+        self.cov_retry_handles.pop(task_name, None)
+        if self.shutting_down or self.task_in_cov_tasklist(task_name):
+            return
+        if self.dev_to_addr(ObjectIdentifier(device_identifier)) is None:
+            self.schedule_cov_retry(
+                task_name,
+                device_identifier,
+                object_identifier,
+                confirmed_notification,
+                lifetime,
+                "no address",
+            )
+            return
+        await self.create_subscription_task(
+            device_identifier=device_identifier,
+            object_identifier=object_identifier,
+            confirmed_notifications=confirmed_notification,
+            lifetime=lifetime,
+        )
 
     @staticmethod
     def stable_process_identifier(object_identifier: ObjectIdentifier) -> int:
@@ -1455,6 +1576,10 @@ class BACnetIOHandler(
 
     async def end_subscription_tasks(self):
         """Cancel all subscription tasks, each unsubscribes from its device."""
+        self.shutting_down = True
+        for handle in self.cov_retry_handles.values():
+            handle.cancel()
+        self.cov_retry_handles.clear()
         tasks = [task for task in self.subscription_tasks if not task.done()]
         LOGGER.info(f"Cancelling {len(tasks)} CoV subscriptions")
         for task in tasks:
