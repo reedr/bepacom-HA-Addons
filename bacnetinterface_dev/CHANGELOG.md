@@ -7,7 +7,7 @@
 - Failed CoV subscriptions are retried. A subscription that failed (no response, abort, a rejection, or a renewal that went unanswered) used to stay gone until the add-on restarted, even after the device was reachable again. It is now resubscribed after 60 s, doubling per attempt up to 15 min, with some jitter so many failures don't retry at once. Errors that retrying can't fix (unknown object or property, not a CoV property, unsupported) are not retried.
 
 ## Changed
-- The Who-Is log line names the device range asked for ("for device 2113", "for all devices"), to show which device a controller is looking for.
+- The Who-Is log line names the device range asked for ("for device 2113", "for all devices"), to show which device a controller is looking for. Each sender and range is logged at most hourly (the rest at DEBUG), so a controller endlessly looking for a missing device does not flood the log.
 
 # 1.6.0b5
 04/04/2025

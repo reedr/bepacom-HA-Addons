@@ -151,6 +151,7 @@ class BACnetIOHandler(
     cov_retry_attempts: dict[str, int] = {}
     cov_retry_handles: dict[str, asyncio.TimerHandle] = {}
     shutting_down: bool = False
+    who_is_logged: dict[tuple, float] = {}
     device_diagnostics: dict[str, dict] = {}
     last_cov_received: dict[str, str] = {}
 
@@ -911,7 +912,19 @@ class BACnetIOHandler(
         target = "all devices" if low is None else (
             f"device {low}" if low == high else f"devices {low}-{high}"
         )
-        LOGGER.info(f"Received Who Is Request from {apdu.pduSource} for {target}")
+        # A controller looking for a device that doesn't exist repeats its
+        # Who-Is every few seconds forever: log each sender/range hourly.
+        key = (str(apdu.pduSource), low, high)
+        now = asyncio.get_event_loop().time()
+        last = self.who_is_logged.get(key)
+        if last is None or now - last >= 3600:
+            self.who_is_logged[key] = now
+            LOGGER.info(
+                f"Received Who Is Request from {apdu.pduSource} for {target}"
+                + ("" if last is None else " (repeating, logged hourly)")
+            )
+        else:
+            LOGGER.debug(f"Received Who Is Request from {apdu.pduSource} for {target}")
         await super().do_WhoIsRequest(apdu)
 
     async def do_IAmRequest(self, apdu) -> None:
