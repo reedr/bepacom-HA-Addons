@@ -906,7 +906,12 @@ class BACnetIOHandler(
 
     async def do_WhoIsRequest(self, apdu) -> None:
         """Handle incoming Who Is request."""
-        LOGGER.info(f"Received Who Is Request from {apdu.pduSource}")
+        low = apdu.deviceInstanceRangeLowLimit
+        high = apdu.deviceInstanceRangeHighLimit
+        target = "all devices" if low is None else (
+            f"device {low}" if low == high else f"devices {low}-{high}"
+        )
+        LOGGER.info(f"Received Who Is Request from {apdu.pduSource} for {target}")
         await super().do_WhoIsRequest(apdu)
 
     async def do_IAmRequest(self, apdu) -> None:
